@@ -27,7 +27,7 @@ them *is* the edge, so both halves get equal weight below.
 | Player identity crosswalk | **nflverse** `players` | Free | ✅ Verified |
 | Injury / availability history | **nflverse** `injuries` | Free | ✅ Verified |
 | Role & depth chart | **nflverse** `depth_charts` | Free | ✅ Verified |
-| **Draft cost (ADP)** | Fantasy Football Calculator API; our own league platform | Free | ⚠️ Unverified here |
+| **Draft cost (ADP)** | **ESPN** `kona_player_info` (the league's platform) | Free | ⚠️ Unverified here |
 | Rookie priors | **nflverse** `draft_picks`, `combine` | Free | ✅ Verified |
 
 **Access these through [`nflreadpy`](https://nflreadpy.nflverse.com/), not
@@ -37,6 +37,32 @@ switch. Neither package is currently declared in this repo's `pyproject.toml`;
 adding `nflreadpy` is a prerequisite for any of this work.
 
 ---
+
+## League settings (confirmed)
+
+Confirmed by @chrisdoering8197 in review of this document. These are not
+assumptions — they are the spec, and they narrow the problem considerably.
+
+| Setting | Value | Consequence for the model |
+|---|---|---|
+| Platform | **ESPN** | ESPN's own ADP is ground truth, not a proxy (§3) |
+| Quarterbacks | **1 QB** (not superflex) | QBs stay low-priority; positional scarcity sits at RB/WR |
+| Draft type | **Snake** | Output is a *ranked list*, not auction dollar values |
+| Horizon | **Redraft** (non-dynasty) | One season ahead. Age curves and rookie upside matter far less |
+| Starting lineup | **1 QB, 3 WR, 2 RB, 1 TE, 1 K, 1 DST** | No FLEX; 3 WR slots make WR depth the dominant need |
+
+Two consequences worth stating explicitly:
+
+- **3 WR and no FLEX** means weekly WR demand is high and inflexible. Depth at
+  receiver is worth more here than in a 2-WR-plus-FLEX league.
+- **K and DST are starting slots**, so they need *some* valuation. They are also
+  where the market is laziest, which fits the late-round focus below.
+
+**Where the value is.** The reviewer's steer: this work earns its keep **in the
+later rounds, on the weird pickups** — not in re-deriving that the consensus
+first-rounders are good. That is a real narrowing of scope and it changes what
+"success" means (§12).
+
 
 ## How to read this document
 
@@ -134,32 +160,82 @@ positive regression. That is close to a working definition of "underrated."
 
 ## 3. Draft cost (ADP) — the constrained half
 
-Without ADP we can predict production but cannot identify a *bargain*. Every
-candidate here was blocked by this environment's egress filter, so all are
-⚠️ **unverified** and need re-checking from a normal network.
+Without ADP we can predict production but cannot identify a *bargain*. Since the
+league drafts on **ESPN**, ESPN's own ADP is the target, and everything else is a
+proxy for it.
 
-| Source | Access | Notes |
+### 3.1 ESPN — the primary source
+
+ESPN has no documented public API, but its fantasy back end is reachable and
+widely used. The relevant call:
+
+```
+https://lm-api-reads.fantasy.espn.com/apis/v3/games/ffl/seasons/<year>/players
+    ?view=kona_player_info
+```
+
+Each player carries an `ownership` object with the two fields that matter:
+
+- **`averageDraftPosition`** — ESPN's ADP, drawn from actual ESPN drafts. This is
+  our draft cost.
+- **`percentOwned`** — how widely the player is rostered across ESPN leagues,
+  and how fast that is moving. This is the closest thing to a live read on
+  where ESPN's population is heading.
+
+Practical notes: the endpoint needs an `x-fantasy-filter` JSON header to page and
+sort, plus a browser-like `User-Agent`. The
+[`espn-api`](https://github.com/cwendt94/espn-api) Python package and
+[`ffscrapr`](https://ffscrapr.ffverse.com/articles/espn_getendpoint.html) (R)
+both wrap this and are the fastest way in. ⚠️ Unverified from this environment —
+`lm-api-reads.fantasy.espn.com` is egress-blocked here, so this needs a first
+call from a normal network to confirm shape and headers.
+
+**ESPN's own projections matter beyond ADP.** ESPN surfaces its projections
+inside the draft room, so they actively *shape* what our leaguemates do. A player
+ESPN projects highly will be drafted earlier in our league regardless of what any
+outside model says. That makes ESPN projections useful twice: as a competing
+forecast, and as a **predictor of our opponents' behaviour**. Disagreeing with
+ESPN is precisely where a pick becomes available at a discount.
+
+### 3.2 Current-year draft trends
+
+Per review: many drafts for this season will already have happened before ours,
+and that movement is signal. A single end-of-preseason ADP snapshot throws it
+away. We should capture **ADP as a time series**, not a number.
+
+What that buys us:
+
+- **Direction and velocity.** A player drifting from ADP 90 to 60 over three
+  weeks is being re-priced by the market in real time. Whether we agree with the
+  move determines if he is now overvalued or still cheap.
+- **Staleness detection.** ADP lags news. A player whose situation changed days
+  ago (a starter ruled out, a depth-chart move) may not have been repriced yet —
+  a window that closes.
+- **Cross-platform gaps.** Where ESPN ADP disagrees with mock-draft sources, the
+  gap is exploitable *in our league specifically*, since our opponents draft on
+  ESPN and are anchored to ESPN's board.
+
+The mechanics are simple and worth starting now: **snapshot ADP on a schedule and
+keep the history.** Nobody sells us last month's ESPN ADP, so if we do not record
+it we cannot use it. A dated file per pull is enough.
+
+| Source | Access | Role |
 |---|---|---|
-| [Fantasy Football Calculator](https://help.fantasyfootballcalculator.com/article/42-adp-rest-api) | Free REST API, JSON | Documented free for personal **and commercial** use. Standard/PPR/2QB/dynasty, by league size. Best starting point. |
-| [Sleeper](https://docs.sleeper.com/) | Free, no auth | Read-only; ~1,000 calls/min guideline. Player metadata, drafts, leagues. If the league runs on Sleeper this is the ground truth. |
-| MyFantasyLeague | Free API | Long-standing ADP export; high-stakes-leaning population. |
-| [FantasyPros](https://www.fantasypros.com/nfl/adp/overall.php) | Free tier / API key | Consensus ADP across host sites, plus ECR. API keys are gated. |
-| RotoWire, DraftSharks, 4for4 (Underdog) | Web | Useful cross-checks; scraping terms vary. |
+| **ESPN** (`kona_player_info`) | Unofficial, no auth | **Primary.** Our draft cost + `percentOwned` trend |
+| [Fantasy Football Calculator](https://help.fantasyfootballcalculator.com/article/42-adp-rest-api) | Free REST API, JSON | Cross-check; live mock drafts; accepts a `year` parameter |
+| [Sleeper](https://docs.sleeper.com/) | Free, no auth | Cross-check; trending adds/drops is a fast news proxy |
+| [FantasyPros](https://www.fantasypros.com/nfl/adp/overall.php) | Free tier / API key | Consensus ADP across hosts, plus expert spread |
+| RotoWire, DraftSharks, FTN | Web | Published daily; useful for sanity-checking our own series |
 
-**The ADP that matters is the one from the platform we actually draft on.**
-Population differs sharply between sources — an FFC mock-draft ADP and an FFPC
-high-stakes ADP disagree, and the disagreement is not noise. If our league is on
-Sleeper or ESPN, that platform's ADP is the target, and everything else is a
-proxy. This is the single most important open question in §12.
+All ⚠️ unverified here (egress-blocked), and all secondary to ESPN.
 
-**Historical ADP is the real scarcity.** Current-year ADP is easy; ADP *as it
-stood before past drafts* is what we need to backtest whether a method actually
-found bargains. Options: FFC's API accepts a `year` parameter;
-[DynastyProcess](https://github.com/dynastyprocess/data) publishes a
-FantasyPros ECR history file. Worth confirming depth early — a strategy we cannot
-backtest is a strategy we cannot trust.
-
----
+**Historical ADP remains the backtesting gap.** Current ADP is easy; ADP *as it
+stood before past drafts* is what proves a method actually found bargains. FFC's
+API takes a `year` parameter and
+[DynastyProcess](https://github.com/dynastyprocess/data) publishes a FantasyPros
+ECR history — but neither is ESPN. Worth confirming depth early, and worth
+starting our own ESPN snapshot archive immediately regardless, because this
+season's history can only be captured while it is happening.
 
 ## 4. Projections and consensus rankings
 
@@ -190,8 +266,12 @@ frequently mispriced in both directions.
 - **CollegeFootballData API** ⚠️ — free with a registered key; college box scores
   and advanced stats. Blocked here, not tested.
 
-Decision needed on whether rookies are in scope at all (§12) — they roughly
-double the modelling work for a minority of draft picks.
+**Largely settled by the league being redraft, not dynasty.** Rookie
+long-term upside carries little weight when the horizon is one season, so the
+college pipeline above is low priority. Draft capital is still worth keeping as a
+cheap feature — a first-round rookie RB walking into touches is a real
+late-round-ADP opportunity — but building out college production modelling is not
+justified for this league.
 
 ---
 
@@ -200,13 +280,45 @@ double the modelling work for a minority of draft picks.
 Games missed is often a larger driver of season-long fantasy points than
 per-game skill, and it is systematically underweighted by drafters.
 
-- **`injuries`** ✅ — weekly practice and game status, 2009+.
+- **`injuries`** ✅ — weekly practice and game status.
 - **`depth_charts`** ✅ — declared role; a change here is an early usage signal.
 - **`snap_counts`** ✅ — 2012+, offense/defense/special-teams snaps and share.
 - **`historical_contracts`** ✅ — guaranteed money is a decent proxy for how
   committed a team is to a player's role.
 
----
+### 6.1 Preseason practice participation — asked in review, and the answer is no
+
+**Short answer: not in nflverse, and this is a genuine gap.** I checked the 2024
+injuries file directly rather than assuming:
+
+- `game_type` values are `REG` (5,954), `WC`, `DIV`, `CON`, `SB` — **no `PRE`**.
+- Weeks run **1–22**, i.e. regular season and playoffs only.
+- The earliest `date_modified` is **2024-09-04**, which is after the preseason
+  has finished.
+
+The cause is upstream, not a packaging choice: the NFL only *mandates* practice
+participation reports during the regular season. There is no official preseason
+report for nflverse to mirror.
+
+**Why this matters more than it looks.** The reviewer's instinct is right, and it
+lands exactly where this project is aimed. Preseason absences are one of the main
+drivers of late-round ADP movement — a backup who takes first-team reps because
+the starter is out is precisely the "weird pickup" this project wants to catch,
+and that information exists *only* in beat reporting during August.
+
+**Practical substitutes**, none as clean as a structured practice table:
+
+| Substitute | What it gives | Notes |
+|---|---|---|
+| Sleeper trending adds/drops | Spikes when news breaks | Free, no auth; a fast proxy for "something happened" |
+| ESPN `percentOwned` velocity | The same signal, on our own platform | Comes free with the ADP pull (§3.1) |
+| Rotowire / Rotoworld player news | Actual beat reporting | Unstructured text; scraping terms apply |
+| `depth_charts` weekly diffs | Role changes once they are official | Lags the news but is structured and free |
+
+The honest recommendation: **treat August news as a manual input**, not a
+modelled feature. Trying to NLP beat-writer tweets for one draft is poor value.
+Watching `percentOwned` velocity and depth-chart diffs, and keeping a short
+hand-maintained watchlist, gets most of the benefit for a fraction of the effort.
 
 ## 7. Game situation
 
@@ -251,7 +363,9 @@ have their own terms that a personal-use project should still respect.
 ## 10. Gaps and risks
 
 - **ADP is the bottleneck**, not player stats. Nothing else on this list is hard
-  to get; ADP — especially historical ADP for backtesting — is.
+  to get; ADP — especially *historical* ESPN ADP for backtesting — is. And unlike
+  the rest, this season's ADP trend is perishable: it can only be captured while
+  the season's drafts are happening (§11.3).
 - **Egress**: several key hosts are blocked from this build environment. If CI
   is ever expected to *fetch* data rather than read a cache, this will bite.
 - **Small-n problem**: a fantasy season is ~17 games and a draft happens once a
@@ -266,80 +380,126 @@ have their own terms that a personal-use project should still respect.
 
 ---
 
-## 11. A minimal v1 that would actually work
+## 11. Updated plan
 
-Deliberately small, to get an end-to-end result before adding sophistication:
+Revised after review. The confirmed league settings above and the reviewer's steer —
+**ADP-implied points, aimed at the late rounds** — change this from a generic
+projection exercise into something much more specific.
 
-1. Pull `player_stats` for the last 5–8 seasons via `nflreadpy`.
-2. Join `snap_counts` and `depth_charts` for opportunity; `players` for IDs.
-3. Pull `ep_weekly` from ffopportunity; compute actual − expected points.
-4. Pull current ADP from one source; convert to an expected-points-at-cost
-   baseline.
-5. Rank by (projection − ADP-implied baseline). Inspect the top 30 by hand — if
-   the list is not football-plausible, the model is wrong, not the league.
-6. Backtest the same procedure against a prior season's ADP before trusting it.
+### 11.1 The metric: points over ADP-implied expectation
 
----
+Chosen over value-over-replacement, per review. VOR is genuinely useful for
+spotting positional cliffs *during* a live draft, but it is awkward as
+preparation because it answers "which position should I take next" rather than
+"who is mispriced." The metric we want is:
 
-## 12. Open questions on strategy
+```
+value = projected_points  -  expected_points_at(ADP)
+```
 
-These change what gets built, and several block meaningful modelling. Grouped by
-how much they matter.
+where `expected_points_at(ADP)` is a curve fitted across past seasons: given a
+player drafted at position *N*, how many fantasy points did players drafted
+around *N* actually score? That curve is the market's implicit forecast. A player
+whose projection sits well above the curve at his cost is underrated, by
+definition and in one number.
 
-### Blocking — these determine what "underrated" even means
+Two properties make this the right fit:
 
-1. **What are the league's scoring settings?** PPR, half-PPR, or standard? PPR
-   changes which players are undervalued more than almost any modelling choice —
-   pass-catching backs and slot receivers move dramatically. Also: any premiums
-   (TE premium, first-down bonuses)?
-2. **What is the roster structure?** Starting lineup, bench size, and especially
-   **superflex / 2QB** — superflex reprices quarterbacks so completely that a
-   model built for single-QB is actively misleading.
-3. **Redraft, keeper, or dynasty?** This sets the prediction horizon. Redraft
-   cares about next season; dynasty needs multi-year trajectories, and age curves
-   become central.
-4. **Snake or auction?** A snake draft needs a ranked list. An auction needs
-   dollar values, which is a different output — a calibrated price, not an order.
-5. **Which platform hosts the league?** Determines which ADP is ground truth
-   (§3), and whether we can pull league history directly.
+- **It is a pre-draft artifact.** It produces a ranked list of names with a
+  number attached, readable before the draft, not a decision rule needing live
+  board state.
+- **It degrades gracefully in the late rounds.** The ADP curve flattens hard
+  after ~round 8 — expected points barely differ between pick 100 and pick 140.
+  That flatness is exactly why late-round mistakes are cheap for the market to
+  make and profitable for us to exploit. A modest projection edge at pick 130
+  outranks a large one at pick 8, where the market is efficient and the curve
+  steep.
 
-### Important — shape the modelling approach
+VOR is still worth computing as a *secondary* column for draft-day use. It is
+just not the headline.
 
-6. **How should "underrated" be defined?** Candidates: projected points minus
-   ADP-implied points; value over replacement at position; or probability of
-   returning a top-N season at that cost. These give materially different lists.
-   I lean toward VOR-based, since it accounts for positional scarcity, but this
-   is a real choice.
-7. **Are rookies in scope?** They need a separate feature path (§5) and roughly
-   double the work. Excluding them for v1 is defensible.
-8. **Build projections, or start from consensus?** Building our own is more
-   work but fully ours. Starting from FantasyPros consensus and modelling only
-   the *deviation* is cheaper, and arguably better aimed — the goal is to
-   disagree with the market in specific, defensible places.
-9. **How far back should the training window go?** The NFL changes; pre-2018
-   passing environments differ meaningfully from today's. More data versus more
-   relevant data.
-10. **What does success look like?** Backtested accuracy against past seasons, or
-    simply a shortlist that survives eyeball scrutiny before draft day? A stated
-    metric would keep this honest.
+### 11.2 Steps
+
+1. **Data pull.** `player_stats` for the last 5–8 seasons via `nflreadpy`, joined
+   to `snap_counts`, `depth_charts` and `players` for IDs.
+2. **Start the ADP archive now.** Snapshot ESPN `kona_player_info`
+   (`averageDraftPosition` + `percentOwned`) on a schedule, one dated file per
+   pull. This season's trend data is perishable — it cannot be reconstructed
+   later. This is the single most time-sensitive item here.
+3. **Fit the ADP→points curve** on past seasons, using whatever historical ADP we
+   can assemble (§3.2). Confirm the depth available before committing.
+4. **Project points** for the coming season. Start simple — prior-year production
+   adjusted for opportunity (`target_share`, snap share) and expected points from
+   ffopportunity. Sophistication can come later; the curve matters more than the
+   projection at first.
+5. **Rank by the gap**, then **filter to ADP > ~80** to focus where the reviewer
+   expects the value. Inspect the top 30 by hand: if the list is not
+   football-plausible, the model is wrong, not the league.
+6. **Backtest** the same procedure against a prior season before trusting it.
+7. **Track ADP drift** through August and re-run. Late movement is where the
+   final edge appears.
+
+### 11.3 Sequencing note
+
+Step 2 is the only step with a deadline attached. Everything else can be built
+after the draft and still be useful next year; the ADP time series cannot. If
+only one thing gets done this week, it should be the snapshot job.
+
+## 12. Open questions
+
+Most of the original blocking questions were answered in review and have moved to
+the "League settings (confirmed)" section and §11. What follows is what
+genuinely remains.
+
+### Still blocking
+
+1. **What are the scoring settings?** Still unanswered, and it is now the *only*
+   remaining blocker. PPR, half-PPR, or standard changes which players are
+   undervalued more than any modelling choice we make — full PPR can move a
+   pass-catching back 20+ picks relative to standard. With 3 WR slots and no
+   FLEX, the PPR question hits the position we most need to get right. Any
+   projection built before this is settled may need redoing.
+
+   Also useful, though not blocking: any bonuses (TE premium, 100-yard games,
+   return yardage), since those tend to be where a league's scoring quietly
+   diverges from the defaults every public projection assumes.
+
+2. **How many teams, and how many bench spots?** League size sets where
+   replacement level falls and therefore how deep "draftable" runs. Bench depth
+   determines how many late-round swings we actually get — which, given the
+   late-round focus, directly sizes the opportunity.
+
+3. **When is the draft?** This is a scheduling constraint, not a modelling one,
+   but it decides how much of §11 is achievable and how long the ADP archive
+   gets to run before it is needed.
+
+### Worth confirming
+
+4. **No FLEX, correct?** The roster given (1 QB, 3 WR, 2 RB, 1 TE, 1 K, 1 DST)
+   has no flex slot. Confirming this matters because it changes RB/WR
+   substitutability at the margin.
+5. **How should K and DST be handled?** They are starting slots, so they need
+   *some* number. They are also close to unpredictable year over year, and
+   modelling them seriously is usually wasted effort. Suggest a minimal
+   streaming-oriented treatment and spending the effort on WR depth instead —
+   but flagging it rather than silently skipping two starting positions.
+6. **Build projections, or model deviation from ESPN's?** Given that ESPN's
+   projections visibly shape our leaguemates' behaviour (§3.1), modelling the
+   *deviation* from ESPN is arguably better aimed than building projections from
+   scratch: it directly targets where our opponents are wrong.
 
 ### Repo mechanics
 
-11. **How should data be stored?** I'd suggest *not* committing raw data — fetch
-    into a gitignored `data/` cache with a script, keeping the repo code-only.
-    This also sidesteps the CC-BY-SA redistribution question (§9). But if
-    reproducibility matters more than repo size, committing pinned snapshots is
-    the alternative.
-12. **Notebooks or pipeline?** The scaffold provides both `notebooks/` and a
-    package. Suggest exploration in notebooks, with anything reused promoted
-    into `project_hail_mary/` — but worth agreeing before habits set.
-13. **Should `nflreadpy` be added to `pyproject.toml`?** No NFL data package is
-    currently declared. This is a required first step and I can do it in a
-    follow-up PR.
-14. **When is the draft?** A hard date changes priorities — it is the difference
-    between building a defensible pipeline and getting a usable list in time.
-
----
+7. **Data storage.** Suggest fetching into a gitignored `data/` cache rather than
+   committing raw data — with one deliberate exception: the **ESPN ADP snapshots
+   from §11.2 should be committed**. They are small, they are irreplaceable once
+   the moment passes, and they are our own observations rather than redistributed
+   third-party data, which also keeps clear of the CC-BY-SA question in §9.
+8. **`nflreadpy` needs adding to `pyproject.toml`.** No NFL data package is
+   currently declared. Prerequisite for everything above; happy to do it in a
+   follow-up PR.
+9. **Notebooks or pipeline?** Suggest exploration in `notebooks/`, with anything
+   reused promoted into `project_hail_mary/`.
 
 ## Appendix: verification log
 
@@ -360,4 +520,9 @@ and `v1.0.0-data`); DynastyProcess `values-players.csv`.
 **Blocked by this environment's egress policy — untested, not known to be down:**
 `api.sleeper.app`, `docs.sleeper.com`, `fantasyfootballcalculator.com`,
 `api.myfantasyleague.com`, `api.collegefootballdata.com`, `site.api.espn.com`,
-`api.the-odds-api.com`.
+`lm-api-reads.fantasy.espn.com`, `fantasy.espn.com`, `api.the-odds-api.com`.
+
+**Inspected to answer a review question (§6.1):** `injuries_2024.csv`, 6,215 rows.
+`game_type` ∈ {REG 5,954; WC 127; DIV 74; CON 45; SB 15} — no `PRE`. Weeks 1–22.
+Earliest `date_modified` 2024-09-04. Conclusion: no preseason practice
+participation data in nflverse.
