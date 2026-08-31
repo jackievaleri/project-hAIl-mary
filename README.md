@@ -43,15 +43,53 @@ each round, with the reasoning behind each one**, in time for the draft.
 
 ## Status
 
-Early days. The repository is being set up — data sources, projections, and
-analysis are still to come. Issues and pull requests are the place to propose
-approaches, data sources, or scoring assumptions.
+Early days. The project is scaffolded (see below) but the analysis itself —
+data sources, projections, rankings — is still to come. Issues and pull
+requests are the place to propose approaches, data sources, or scoring
+assumptions.
 
 ## League context
 
 Built for our fantasy football league. Scoring settings, roster structure, and
 league rules affect which players count as underrated, so those assumptions
 should be written down here as the analysis takes shape.
+
+## Project layout
+
+Scaffolded with [`pyds-cli`](https://github.com/ericmjl/pyds-cli), which
+generates a standard Python data science project:
+
+```
+project_hail_mary/     # the package: analysis code lives here
+  preprocessing.py     #   loading and cleaning player/usage data
+  models.py            #   projection models
+  schemas.py           #   dataframe schemas (pandera)
+  utils.py             #   shared helpers
+  cli.py               #   command line entry point (typer)
+notebooks/             # exploratory analysis
+tests/                 # pytest suite
+docs/                  # mkdocs documentation site
+```
+
+Environments and dependencies are managed with
+[pixi](https://pixi.sh/) via `pyproject.toml`; pandas, scikit-learn, pymc,
+jax, matplotlib and seaborn are already declared.
+
+## Get started for development
+
+```bash
+git clone git@github.com:jackievaleri/project-hAIl-mary
+cd project-hAIl-mary
+pixi install
+```
+
+Common tasks:
+
+```bash
+pixi run test         # run the test suite
+pixi run lint         # run pre-commit across the repo
+pixi run serve-docs   # preview the docs site locally
+```
 
 ## Contributing
 
